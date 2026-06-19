@@ -1,0 +1,2396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCRAP LORD: Mech Salvage — Enhanced Edition</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background-color: #020202;
+            color: #888;
+            font-family: 'Courier New', Courier, monospace;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        #canvas-container {
+            position: relative;
+            width: 900px;
+            height: 640px;
+            border: 1px solid #1a1a1a;
+            box-shadow: 0 0 60px rgba(255, 50, 0, 0.08), 0 0 120px rgba(0, 0, 0, 0.8);
+        }
+        canvas {
+            background-color: #080808;
+            display: block;
+            cursor: crosshair;
+        }
+        #canvas-container::after {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: repeating-linear-gradient(
+                to bottom,
+                transparent 0px, transparent 2px,
+                rgba(0, 0, 0, 0.1) 3px, rgba(0, 0, 0, 0.1) 4px
+            );
+            pointer-events: none;
+            z-index: 10;
+            mix-blend-mode: multiply;
+        }
+        #canvas-container::before {
+            content: "";
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.65) 100%);
+            pointer-events: none;
+            z-index: 11;
+        }
+        h1 { margin: 0 0 4px 0; color: #ff3300; text-transform: uppercase; letter-spacing: 4px; font-size: 22px; text-shadow: 0 0 10px #ff3300, 0 0 30px rgba(255,50,0,0.3); }
+        h3 { margin: 0 0 12px 0; color: #444; font-weight: normal; font-size: 11px; letter-spacing: 2px; }
+        #instructions { margin-top: 12px; font-size: 11px; color: #444; text-transform: uppercase; letter-spacing: 1px; }
+        #instructions span { color: #666; }
+    </style>
+</head>
+<body>
+
+    <h1>SCRAP LORD</h1>
+    <h3>MECH SALVAGE PROTOCOL v2.1 // TOUHOU EDITION</h3>
+
+    <div id="canvas-container">
+        <canvas id="gameCanvas" width="900" height="640"></canvas>
+    </div>
+
+    <div id="instructions">
+        <span>WASD</span> Move &nbsp;//&nbsp; <span>Mouse</span> Aim &nbsp;//&nbsp; <span>LMB</span> Fire &nbsp;//&nbsp; <span>RMB</span> Vent Reactor &nbsp;//&nbsp; <span>SPACE</span> Dash &nbsp;//&nbsp; <span>E</span> Pickup Range &nbsp;//&nbsp; <span>SHIFT</span> Focus Mode
+    </div>
+
+<script>
+// ==========================================
+// SCRAP LORD ENHANCED + TOUHOU ELEMENTS
+// ==========================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ==========================================
+// AUDIO ENGINE (Procedural Web Audio)
+// ==========================================
+const AudioEngine = (() => {
+    let actx = null;
+    let masterGain = null;
+    let muted = false;
+
+    function init() {
+        if (actx) return;
+        actx = new (window.AudioContext || window.webkitAudioContext)();
+        masterGain = actx.createGain();
+        masterGain.gain.value = 0.3;
+        masterGain.connect(actx.destination);
+    }
+
+    function resume() {
+        if (actx && actx.state === 'suspended') actx.resume();
+    }
+
+    function noise(duration, volume = 0.1) {
+        if (!actx || muted) return;
+        const bufferSize = actx.sampleRate * duration;
+        const buffer = actx.createBuffer(1, bufferSize, actx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const src = actx.createBufferSource();
+        src.buffer = buffer;
+        const g = actx.createGain();
+        g.gain.setValueAtTime(volume, actx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + duration);
+        const filter = actx.createBiquadFilter();
+        filter.type = 'lowpass';
+        filter.frequency.value = 800;
+        src.connect(filter);
+        filter.connect(g);
+        g.connect(masterGain);
+        src.start();
+    }
+
+    function tone(freq, duration, type = 'square', volume = 0.08, freqEnd = null) {
+        if (!actx || muted) return;
+        const osc = actx.createOscillator();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, actx.currentTime);
+        if (freqEnd) osc.frequency.exponentialRampToValueAtTime(Math.max(freqEnd, 20), actx.currentTime + duration);
+        const g = actx.createGain();
+        g.gain.setValueAtTime(volume, actx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + duration);
+        osc.connect(g);
+        g.connect(masterGain);
+        osc.start();
+        osc.stop(actx.currentTime + duration);
+    }
+
+    return {
+        init, resume,
+        shoot() { tone(220, 0.08, 'sawtooth', 0.12, 80); noise(0.06, 0.08); },
+        shootHeavy() { tone(120, 0.15, 'sawtooth', 0.15, 40); noise(0.12, 0.12); },
+        shootFocus() { tone(330, 0.06, 'sine', 0.08, 160); tone(220, 0.08, 'sawtooth', 0.06, 110); },
+        hit() { noise(0.1, 0.1); tone(300, 0.05, 'sine', 0.06, 100); },
+        explode() { noise(0.4, 0.2); tone(60, 0.3, 'sine', 0.1, 20); },
+        bigExplode() { noise(0.6, 0.3); tone(40, 0.5, 'sine', 0.15, 15); tone(80, 0.3, 'sawtooth', 0.08, 20); },
+        vent() { noise(0.5, 0.15); tone(800, 0.4, 'sine', 0.08, 200); },
+        pickup() { tone(600, 0.1, 'sine', 0.1, 900); setTimeout(() => tone(900, 0.15, 'sine', 0.08, 1200), 80); },
+        dash() { noise(0.15, 0.08); tone(400, 0.12, 'sawtooth', 0.06, 100); },
+        meltdown() { tone(100, 0.8, 'sawtooth', 0.12, 20); noise(0.8, 0.15); },
+        waveStart() { tone(440, 0.1, 'square', 0.06); setTimeout(() => tone(660, 0.1, 'square', 0.06), 100); setTimeout(() => tone(880, 0.2, 'square', 0.08), 200); },
+        menuClick() { tone(800, 0.04, 'square', 0.06, 600); },
+        upgrade() { tone(400, 0.1, 'sine', 0.08, 800); setTimeout(() => tone(600, 0.1, 'sine', 0.08, 1000), 80); setTimeout(() => tone(1000, 0.2, 'sine', 0.1, 1200), 160); },
+        bossAlert() { for (let i = 0; i < 3; i++) setTimeout(() => tone(200, 0.3, 'square', 0.1, 100), i * 400); },
+        graze() { tone(1200, 0.05, 'sine', 0.04, 1800); tone(1400, 0.03, 'sine', 0.03, 2000); },
+        pointBlank() { tone(150, 0.15, 'sawtooth', 0.1, 60); noise(0.1, 0.12); },
+        protocolShift() { tone(300, 0.3, 'sine', 0.08, 600); tone(200, 0.4, 'sine', 0.06, 100); noise(0.2, 0.05); },
+        toggleMute() { muted = !muted; return muted; }
+    };
+})();
+
+// ==========================================
+// GAME STATE
+// ==========================================
+let gameState = 'MENU';
+let score = 0;
+let nextUpgradeScore = 200;
+let wave = 1;
+let waveTimer = 0;
+let enemies = [];
+let bullets = [];
+let enemyBullets = [];
+let particles = [];
+let obstacles = [];
+let pickups = [];
+let damageNumbers = [];
+let currentUpgrades = [];
+let shakeAmount = 0;
+let screenFlash = { r: 0, g: 0, b: 0, alpha: 0 };
+let frameCount = 0;
+let comboTimer = 0;
+let comboCount = 0;
+let comboMultiplier = 1;
+let killFeed = [];
+let bgStars = [];
+let menuPulse = 0;
+
+// --- Touhou Elements ---
+let grazeCount = 0;
+let grazeTimer = 0;
+let grazeFlash = 0;
+let focusMode = false;
+let protocolAnnouncement = null; // { text, subtext, timer, color }
+
+// Generate background debris/stars
+for (let i = 0; i < 80; i++) {
+    bgStars.push({
+        x: Math.random() * W, y: Math.random() * H,
+        size: Math.random() * 1.5 + 0.3,
+        brightness: Math.random() * 0.3 + 0.05,
+        twinkleSpeed: Math.random() * 0.02 + 0.005
+    });
+}
+
+// ==========================================
+// BOSS PROTOCOL CARDS (Touhou-style named attacks)
+// ==========================================
+const BOSS_PROTOCOLS = [
+    {
+        name: "IRON TEMPEST",
+        sub: "Rotating bullet curtain",
+        color: '#ff6600',
+        duration: 240,
+        pattern: function(boss, timer) {
+            // Rotating spiral of bullets
+            if (timer % 8 === 0) {
+                let arms = 5;
+                let baseAngle = timer * 0.04;
+                for (let a = 0; a < arms; a++) {
+                    let angle = baseAngle + (a / arms) * Math.PI * 2;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 3.5, dy: Math.sin(angle) * 3.5,
+                        life: 150, color: '#ff6600', size: 5
+                    });
+                }
+            }
+        }
+    },
+    {
+        name: "VOLLEY BARRAGE",
+        sub: "Directed spread salvos",
+        color: '#ff00ff',
+        duration: 200,
+        pattern: function(boss, timer) {
+            if (timer % 20 === 0) {
+                let aToMech = Math.atan2(mech.y - boss.y, mech.x - boss.x);
+                for (let i = -3; i <= 3; i++) {
+                    let angle = aToMech + i * 0.15;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 5, dy: Math.sin(angle) * 5,
+                        life: 120, color: '#ff00ff', size: 4
+                    });
+                }
+            }
+            // Offset aimed shots
+            if (timer % 30 === 10) {
+                let aToMech = Math.atan2(mech.y - boss.y, mech.x - boss.x);
+                for (let i = -2; i <= 2; i++) {
+                    let angle = aToMech + i * 0.25 + Math.sin(timer * 0.05) * 0.3;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 4, dy: Math.sin(angle) * 4,
+                        life: 110, color: '#cc44ff', size: 3
+                    });
+                }
+            }
+        }
+    },
+    {
+        name: "REACTOR OVERFLOW",
+        sub: "Dense radial bursts",
+        color: '#00ccff',
+        duration: 180,
+        pattern: function(boss, timer) {
+            if (timer % 12 === 0) {
+                let count = 16;
+                for (let i = 0; i < count; i++) {
+                    let angle = (i / count) * Math.PI * 2;
+                    let speed = 2.5 + Math.sin(timer * 0.08 + i) * 1.5;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * speed, dy: Math.sin(angle) * speed,
+                        life: 140, color: '#00ccff', size: 4
+                    });
+                }
+            }
+            // Inner ring burst
+            if (timer % 40 === 20) {
+                let count = 24;
+                for (let i = 0; i < count; i++) {
+                    let angle = (i / count) * Math.PI * 2 + timer * 0.03;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 2, dy: Math.sin(angle) * 2,
+                        life: 160, color: '#44ddff', size: 3
+                    });
+                }
+            }
+        }
+    },
+    {
+        name: "GRAVEYARD SHIFT",
+        sub: "Tracking amulet pattern",
+        color: '#44ff88',
+        duration: 220,
+        pattern: function(boss, timer) {
+            // Delayed aimed shots - shoot where player WAS
+            if (timer % 15 === 0) {
+                let aToMech = Math.atan2(mech.y - boss.y, mech.x - boss.x);
+                let dist = Math.sqrt((mech.x - boss.x) ** 2 + (mech.y - boss.y) ** 2);
+                let travelTime = dist / 4;
+                // Predict where player will be
+                let predX = mech.x, predY = mech.y;
+                if (keys['w']) predY -= mech.speed * travelTime * 0.5;
+                if (keys['s']) predY += mech.speed * travelTime * 0.5;
+                if (keys['a']) predX -= mech.speed * travelTime * 0.5;
+                if (keys['d']) predX += mech.speed * travelTime * 0.5;
+                let aPred = Math.atan2(predY - boss.y, predX - boss.x);
+                for (let i = 0; i < 3; i++) {
+                    let angle = aPred + (i - 1) * 0.12;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 4.5, dy: Math.sin(angle) * 4.5,
+                        life: 130, color: '#44ff88', size: 4
+                    });
+                }
+            }
+            // Cross pattern
+            if (timer % 30 === 15) {
+                for (let a = 0; a < 4; a++) {
+                    let angle = a * Math.PI / 2 + timer * 0.02;
+                    for (let j = 0; j < 4; j++) {
+                        let sp = 2 + j * 1.2;
+                        enemyBullets.push({
+                            x: boss.x, y: boss.y,
+                            dx: Math.cos(angle) * sp, dy: Math.sin(angle) * sp,
+                            life: 120, color: '#22cc66', size: 3
+                        });
+                    }
+                }
+            }
+        }
+    },
+    {
+        name: "HELLFIRE RAIN",
+        sub: "Phase 2 - Chaotic barrage",
+        color: '#ff2200',
+        duration: 260,
+        pattern: function(boss, timer) {
+            // Rapid spiral with varying speed
+            if (timer % 5 === 0) {
+                let arms = 8;
+                let baseAngle = -timer * 0.06;
+                for (let a = 0; a < arms; a++) {
+                    let angle = baseAngle + (a / arms) * Math.PI * 2;
+                    let speed = 3 + Math.sin(timer * 0.1 + a) * 2;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * speed, dy: Math.sin(angle) * speed,
+                        life: 150, color: '#ff2200', size: 5
+                    });
+                }
+            }
+            // Random aimed bursts
+            if (timer % 25 === 0) {
+                let aToMech = Math.atan2(mech.y - boss.y, mech.x - boss.x);
+                for (let i = -4; i <= 4; i++) {
+                    let angle = aToMech + i * 0.1 + (Math.random() - 0.5) * 0.2;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 6, dy: Math.sin(angle) * 6,
+                        life: 100, color: '#ff4400', size: 3
+                    });
+                }
+            }
+        }
+    },
+    {
+        name: "FINAL JUDGMENT",
+        sub: "Phase 2 - All patterns combined",
+        color: '#ff0066',
+        duration: 300,
+        pattern: function(boss, timer) {
+            // Spiral
+            if (timer % 6 === 0) {
+                let arms = 6;
+                let baseAngle = timer * 0.05;
+                for (let a = 0; a < arms; a++) {
+                    let angle = baseAngle + (a / arms) * Math.PI * 2;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 3, dy: Math.sin(angle) * 3,
+                        life: 160, color: '#ff0066', size: 4
+                    });
+                }
+            }
+            // Aimed fan
+            if (timer % 18 === 0) {
+                let aToMech = Math.atan2(mech.y - boss.y, mech.x - boss.x);
+                for (let i = -2; i <= 2; i++) {
+                    let angle = aToMech + i * 0.2;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * 5.5, dy: Math.sin(angle) * 5.5,
+                        life: 110, color: '#ff4488', size: 3
+                    });
+                }
+            }
+            // Dense ring
+            if (timer % 35 === 0) {
+                let count = 20;
+                for (let i = 0; i < count; i++) {
+                    let angle = (i / count) * Math.PI * 2;
+                    let speed = 1.8 + (i % 2) * 1.5;
+                    enemyBullets.push({
+                        x: boss.x, y: boss.y,
+                        dx: Math.cos(angle) * speed, dy: Math.sin(angle) * speed,
+                        life: 170, color: '#cc0044', size: 4
+                    });
+                }
+            }
+        }
+    }
+];
+
+// ==========================================
+// MECH DEFINITIONS
+// ==========================================
+const MECHS = {
+    Juggernaut: {
+        name: "JUGGERNAUT", subtitle: "Heavy Assault Frame",
+        health: 200, speed: 1.5, fireRate: 8, heatPerShot: 6, color: '#667', accentColor: '#99a',
+        bulletDamage: 15, spread: 0, dashSpeed: 6, dashCooldown: 90,
+        desc: ["Highest hull integrity", "Balanced firepower", "Slow but devastating"]
+    },
+    Scout: {
+        name: "SCOUT", subtitle: "Reconnaissance Frame",
+        health: 100, speed: 3.5, fireRate: 5, heatPerShot: 3, color: '#899', accentColor: '#bbc',
+        bulletDamage: 8, spread: 0, dashSpeed: 12, dashCooldown: 45,
+        desc: ["Fastest chassis", "Low heat generation", "Double dash speed"]
+    },
+    Artillery: {
+        name: "ARTILLERY", subtitle: "Siege Platform Frame",
+        health: 120, speed: 2, fireRate: 25, heatPerShot: 20, color: '#665', accentColor: '#998',
+        bulletDamage: 25, spread: 3, dashSpeed: 5, dashCooldown: 120,
+        desc: ["Massive burst damage", "Explosive ordnance", "Area denial specialist"]
+    }
+};
+
+let mech = {};
+function initMech(type) {
+    let base = MECHS[type];
+    mech = {
+        ...base,
+        x: W / 2, y: H / 2,
+        radius: 22, angle: 0,
+        heat: 0, maxHeat: 100,
+        maxHealth: base.health, health: base.health,
+        isShutdown: false, shutdownTimer: 0,
+        fireCooldown: 0,
+        passiveCooling: 0.2,
+        ventRadius: 150,
+        bulletSpeed: 10,
+        installedParts: [],
+        // Dash
+        isDashing: false, dashTimer: 0, dashCooldownTimer: 0, dashAngle: 0, dashTrail: [],
+        // Visual
+        invulnTimer: 0, thrustParticleTimer: 0,
+        // Touhou
+        hitboxRadius: 4, // The actual collision dot (Touhou-style)
+        grazeRadius: 32, // Grazing detection ring
+        type: type
+    };
+}
+
+// ==========================================
+// INPUT
+// ==========================================
+const keys = {};
+const mouse = { x: W/2, y: H/2, down: false, click: false };
+
+window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+    if (e.key === ' ') e.preventDefault();
+    if (e.key === 'Shift') focusMode = true;
+    AudioEngine.resume();
+});
+window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
+    if (e.key === 'Shift') focusMode = false;
+});
+
+canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    mouse.x = (e.clientX - rect.left) * scaleX;
+    mouse.y = (e.clientY - rect.top) * scaleY;
+});
+
+canvas.addEventListener('mousedown', e => {
+    AudioEngine.resume();
+    AudioEngine.init();
+    if (e.button === 0) { mouse.down = true; mouse.click = true; }
+    if (e.button === 2 && gameState === 'PLAYING') ventReactor();
+});
+canvas.addEventListener('mouseup', e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ==========================================
+// UPGRADES
+// ==========================================
+const ALL_UPGRADES = [
+    { name: "[WEAPON] Rotary Autocannon", desc: "Fire Rate +40%\nDamage -40%", icon: "RA",
+      apply: m => { m.fireRate *= 0.6; m.bulletDamage *= 0.6; }, tier: 1 },
+    { name: "[WEAPON] Heavy Cannon", desc: "Damage +120%\nFire Rate -40%\nHeat/Shot +50%", icon: "HC",
+      apply: m => { m.bulletDamage *= 2.2; m.fireRate *= 1.6; m.heatPerShot *= 1.5; }, tier: 2 },
+    { name: "[WEAPON] Plasma Spreader", desc: "+2 Projectiles\nDamage -50%\nSpread +", icon: "PS",
+      apply: m => { m.spread += 2; m.bulletDamage *= 0.5; }, tier: 1 },
+    { name: "[WEAPON] Rail Gun", desc: "Bullet Speed x2\nDamage +80%\nPierce +1", icon: "RG",
+      apply: m => { m.bulletSpeed *= 2; m.bulletDamage *= 1.8; }, tier: 3 },
+    { name: "[WEAPON] Focus Laser", desc: "Focus DMG +60%\nNormal DMG -20%", icon: "FL",
+      apply: m => { m.focusDamageMult = (m.focusDamageMult || 1) * 1.6; m.bulletDamage *= 0.8; }, tier: 2 },
+    { name: "[CORE] Overclocked Reactor", desc: "Max Heat +50\nMove Speed +20%\nCooling -30%", icon: "OR",
+      apply: m => { m.maxHeat += 50; m.speed *= 1.2; m.passiveCooling *= 0.7; }, tier: 1 },
+    { name: "[CORE] Cryo-Vents", desc: "Cooling +100%\nVent Radius +50%\nMax Health -30", icon: "CV",
+      apply: m => { m.passiveCooling *= 2; m.ventRadius += 100; m.maxHealth -= 30; m.health -= 30; }, tier: 2 },
+    { name: "[CORE] Fusion Core", desc: "All Damage +30%\nPassive Heat -50%", icon: "FC",
+      apply: m => { m.bulletDamage *= 1.3; m.heatPerShot *= 0.5; }, tier: 3 },
+    { name: "[CORE] Graze Amplifier", desc: "Graze Radius +40%\nGraze Score +100%", icon: "GA",
+      apply: m => { m.grazeRadius *= 1.4; m.grazeScoreMult = (m.grazeScoreMult || 1) * 2; }, tier: 2 },
+    { name: "[CHASSIS] Heavy Plating", desc: "Max Health +100\nMove Speed -20%", icon: "HP",
+      apply: m => { m.maxHealth += 100; m.health += 100; m.speed *= 0.8; }, tier: 1 },
+    { name: "[CHASSIS] Titanium Servos", desc: "Move Speed +40%\nMax Health -40", icon: "TS",
+      apply: m => { m.speed *= 1.4; m.maxHealth -= 40; m.health -= 40; }, tier: 1 },
+    { name: "[CHASSIS] Nano Repair", desc: "Regen 0.05 HP/frame\nMax Health -20", icon: "NR",
+      apply: m => { m.regen = (m.regen || 0) + 0.05; m.maxHealth -= 20; m.health -= 20; }, tier: 2 },
+    { name: "[SYSTEM] Targeting AI", desc: "Bullet Speed +50%\nDamage +20%", icon: "TA",
+      apply: m => { m.bulletSpeed *= 1.5; m.bulletDamage *= 1.2; }, tier: 1 },
+    { name: "[SYSTEM] Reactor Shielding", desc: "Heat/Shot -30%\nCooling +20%", icon: "RS",
+      apply: m => { m.heatPerShot *= 0.7; m.passiveCooling *= 1.2; }, tier: 1 },
+    { name: "[SYSTEM] Dash Thrusters", desc: "Dash Speed +40%\nDash Cooldown -30%", icon: "DT",
+      apply: m => { m.dashSpeed *= 1.4; m.dashCooldown *= 0.7; }, tier: 2 },
+    { name: "[SYSTEM] Magnet Lock", desc: "Pickup Range x3\nScore +15%", icon: "ML",
+      apply: m => { m.pickupRange = (m.pickupRange || 60) * 3; }, tier: 1 }
+];
+
+function rollUpgrades() {
+    let pool = ALL_UPGRADES.filter(u => {
+        if (u.tier === 3 && wave < 6) return false;
+        if (u.tier === 2 && wave < 3) return false;
+        return true;
+    });
+    currentUpgrades = [];
+    let count = Math.min(3, pool.length);
+    for (let i = 0; i < count; i++) {
+        let idx = Math.floor(Math.random() * pool.length);
+        currentUpgrades.push(pool[idx]);
+        pool.splice(idx, 1);
+    }
+}
+
+// ==========================================
+// TERRAIN
+// ==========================================
+function generateTerrain() {
+    obstacles = [];
+    let count = 4 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < count; i++) {
+        let w = 50 + Math.random() * 60;
+        let h = 50 + Math.random() * 60;
+        let x = Math.random() * (W - 250) + 125;
+        let y = Math.random() * (H - 250) + 125;
+        if (Math.abs(x + w/2 - W/2) < 120 && Math.abs(y + h/2 - H/2) < 120) continue;
+        let overlap = obstacles.some(o =>
+            x < o.x + o.w + 30 && x + w > o.x - 30 &&
+            y < o.y + o.h + 30 && y + h > o.y - 30
+        );
+        if (!overlap) {
+            obstacles.push({
+                x, y, w, h, health: 120 + wave * 10,
+                maxHealth: 120 + wave * 10,
+                variant: Math.floor(Math.random() * 3)
+            });
+        }
+    }
+}
+
+// ==========================================
+// PICKUPS
+// ==========================================
+function spawnPickup(x, y) {
+    if (Math.random() > 0.35) return;
+    let r = Math.random();
+    let type, color, value;
+    if (r < 0.45) { type = 'health'; color = '#33ff66'; value = 15 + Math.floor(wave * 2); }
+    else if (r < 0.75) { type = 'scrap'; color = '#ffdd00'; value = 10 + Math.floor(wave * 3); }
+    else if (r < 0.9) { type = 'coolant'; color = '#00ccff'; value = -25; }
+    else { type = 'overcharge'; color = '#ff6600'; value = 50; }
+    pickups.push({ x, y, type, color, value, life: 600, radius: 8, pulse: 0 });
+}
+
+// ==========================================
+// VENT REACTOR
+// ==========================================
+function ventReactor() {
+    if (mech.isShutdown || mech.heat < 10) return;
+    mech.heat = 0;
+    shakeAmount = 12;
+    screenFlash = { r: 0, g: 1, b: 1, alpha: 0.3 };
+    AudioEngine.vent();
+
+    for (let i = 0; i < 60; i++) {
+        let angle = Math.random() * Math.PI * 2;
+        let speed = Math.random() * 6 + 3;
+        particles.push({
+            x: mech.x, y: mech.y,
+            dx: Math.cos(angle) * speed, dy: Math.sin(angle) * speed,
+            life: 35, maxLife: 35,
+            color: `hsl(${180 + Math.random()*40}, 100%, ${60+Math.random()*30}%)`,
+            size: Math.random() * 3 + 1, type: 'spark'
+        });
+    }
+    particles.push({
+        x: mech.x, y: mech.y, dx: 0, dy: 0,
+        life: 20, maxLife: 20, color: '#00ffff',
+        size: 10, type: 'ring', maxRadius: mech.ventRadius
+    });
+
+    enemies.forEach(e => {
+        let dx = e.x - mech.x, dy = e.y - mech.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < mech.ventRadius) {
+            let force = (1 - dist / mech.ventRadius) * 140;
+            e.x += (dx / dist) * force;
+            e.y += (dy / dist) * force;
+            e.health -= 25;
+            for (let i = 0; i < 5; i++) {
+                particles.push({
+                    x: e.x, y: e.y,
+                    dx: (Math.random() - 0.5) * 4, dy: (Math.random() - 0.5) * 4,
+                    life: 15, maxLife: 15, color: '#00ffff', size: 2, type: 'spark'
+                });
+            }
+        }
+    });
+}
+
+// ==========================================
+// DASH
+// ==========================================
+function startDash() {
+    if (mech.isShutdown || mech.isDashing || mech.dashCooldownTimer > 0) return;
+    mech.isDashing = true;
+    mech.dashTimer = 8;
+    mech.dashCooldownTimer = mech.dashCooldown;
+    mech.invulnTimer = 10;
+
+    let dx = 0, dy = 0;
+    if (keys['w']) dy -= 1;
+    if (keys['s']) dy += 1;
+    if (keys['a']) dx -= 1;
+    if (keys['d']) dx += 1;
+    if (dx === 0 && dy === 0) { dx = Math.cos(mech.angle); dy = Math.sin(mech.angle); }
+    let len = Math.sqrt(dx * dx + dy * dy);
+    mech.dashAngle = Math.atan2(dy / len, dx / len);
+
+    mech.heat = Math.min(mech.heat + 5, mech.maxHeat);
+    AudioEngine.dash();
+}
+
+// ==========================================
+// ENEMY SPAWNING
+// ==========================================
+function spawnEnemy() {
+    let side = Math.floor(Math.random() * 4);
+    let x, y;
+    let margin = 40;
+    if (side === 0) { x = Math.random() * W; y = -margin; }
+    else if (side === 1) { x = W + margin; y = Math.random() * H; }
+    else if (side === 2) { x = Math.random() * W; y = H + margin; }
+    else { x = -margin; y = Math.random() * H; }
+
+    let r = Math.random();
+    let waveScale = 1 + wave * 0.08;
+    let type = 'Grunt';
+
+    if (wave > 8 && r < 0.08) type = 'Phantom';
+    else if (wave > 6 && r < 0.15) type = 'Shielded';
+    else if (wave > 4 && r < 0.2) type = 'Brute';
+    else if (wave > 2 && r < 0.4) type = 'Sentry';
+    else if (wave > 1 && r < 0.6) type = 'Swarm';
+
+    const templates = {
+        Grunt:    { radius: 14, speed: 1.5 * waveScale, health: 30 * waveScale, color: '#aa3333', damage: 0.5, score: 15 },
+        Swarm:    { radius: 8,  speed: 3 * waveScale,   health: 10 * waveScale, color: '#dd66aa', damage: 0.2, score: 8 },
+        Brute:    { radius: 28, speed: 0.8 * waveScale,  health: 90 * waveScale, color: '#cc6600', damage: 1.5, score: 40 },
+        Sentry:   { radius: 18, speed: 1.2 * waveScale,  health: 40 * waveScale, color: '#9933ff', damage: 0.5, score: 25, shootCooldown: 100 },
+        Shielded: { radius: 18, speed: 1.0 * waveScale,  health: 50 * waveScale, color: '#3399ff', damage: 0.8, score: 35, shield: 30 },
+        Phantom:  { radius: 12, speed: 2.5 * waveScale,  health: 20 * waveScale, color: '#88ffcc', damage: 1.0, score: 50, teleportTimer: 120, alpha: 0.4 }
+    };
+
+    if (type === 'Swarm') {
+        for (let i = 0; i < 3; i++) {
+            enemies.push({
+                ...templates.Swarm, type,
+                x: x + Math.random() * 30 - 15,
+                y: y + Math.random() * 30 - 15,
+                maxHealth: 10 * waveScale, flashTimer: 0
+            });
+        }
+    } else {
+        let t = templates[type];
+        enemies.push({
+            ...t, type, x, y,
+            maxHealth: t.health, flashTimer: 0
+        });
+    }
+}
+
+function spawnBoss() {
+    shakeAmount = 20;
+    screenFlash = { r: 1, g: 0, b: 0, alpha: 0.4 };
+    AudioEngine.bossAlert();
+
+    let bossHealth = 600 + wave * 80;
+    // Pick protocols - phase 1 gets 3 random, phase 2 gets 2 harder ones
+    let phase1Protocols = [];
+    let phase2Protocols = [];
+    let available = [...BOSS_PROTOCOLS];
+    // Shuffle
+    for (let i = available.length - 1; i > 0; i--) {
+        let j = Math.floor(Math.random() * (i + 1));
+        [available[i], available[j]] = [available[j], available[i]];
+    }
+    phase1Protocols = available.slice(0, 3);
+    phase2Protocols = available.slice(3, 5);
+    // If not enough protocols, reuse some
+    if (phase2Protocols.length < 2) {
+        phase2Protocols.push(BOSS_PROTOCOLS[BOSS_PROTOCOLS.length - 1]);
+        phase2Protocols.push(BOSS_PROTOCOLS[BOSS_PROTOCOLS.length - 2]);
+    }
+
+    enemies.push({
+        type: 'Boss',
+        x: W / 2, y: -80,
+        radius: 55, speed: 0.6,
+        health: bossHealth, maxHealth: bossHealth,
+        color: '#ff0000', damage: 3,
+        score: 300,
+        shootCooldown: 60,
+        phase: 1,
+        flashTimer: 0,
+        angle: 0,
+        // Protocol system
+        protocols: phase1Protocols,
+        phase2Protocols: phase2Protocols,
+        currentProtocolIdx: 0,
+        protocolTimer: 0,
+        protocolActive: true,
+        protocolName: phase1Protocols[0].name,
+        protocolColor: phase1Protocols[0].color
+    });
+}
+
+function announceProtocol(name, sub, color) {
+    protocolAnnouncement = {
+        text: name, sub: sub,
+        timer: 120, // 2 seconds display
+        color: color || '#ff6600'
+    };
+    AudioEngine.protocolShift();
+    // Also add to kill feed
+    addKillFeed(`PROTOCOL: ${name}`, color || '#ff6600');
+}
+
+// ==========================================
+// SHOOTING
+// ==========================================
+function shoot() {
+    if (mech.fireCooldown > 0 || mech.isShutdown) return;
+
+    let dx = mouse.x - mech.x;
+    let dy = mouse.y - mech.y;
+    let baseAngle = Math.atan2(dy, dx);
+
+    let isHeavy = mech.type === 'Artillery';
+    let isFocus = focusMode;
+    let dmg = mech.bulletDamage;
+
+    // Focus mode: concentrated fire, more damage, less spread
+    if (isFocus) {
+        dmg *= (mech.focusDamageMult || 1);
+        // Faster fire rate in focus
+        mech.fireCooldown = Math.max(2, Math.floor(mech.fireRate * 0.85));
+    } else {
+        mech.fireCooldown = mech.fireRate;
+    }
+
+    let numBullets = isFocus ? 1 + Math.max(0, (mech.spread || 0) - 1) : 1 + (mech.spread || 0);
+    let spreadAngle = isFocus ? 0.06 : 0.12;
+
+    for (let i = 0; i < numBullets; i++) {
+        let angle = baseAngle + ((i - (numBullets - 1) / 2) * spreadAngle);
+        let ox = Math.cos(angle) * 35;
+        let oy = Math.sin(angle) * 35;
+        bullets.push({
+            x: mech.x + ox, y: mech.y + oy,
+            dx: Math.cos(angle) * mech.bulletSpeed,
+            dy: Math.sin(angle) * mech.bulletSpeed,
+            life: 60,
+            damage: dmg,
+            size: isHeavy ? 4 : 2,
+            trail: [],
+            isFocus: isFocus
+        });
+    }
+
+    // Muzzle flash
+    for (let i = 0; i < 8; i++) {
+        let a = baseAngle + (Math.random() - 0.5) * 0.6;
+        let s = Math.random() * 4 + 2;
+        particles.push({
+            x: mech.x + Math.cos(baseAngle) * 35,
+            y: mech.y + Math.sin(baseAngle) * 35,
+            dx: Math.cos(a) * s, dy: Math.sin(a) * s,
+            life: 8, maxLife: 8,
+            color: isFocus ? '#ff4488' : (isHeavy ? '#ff6600' : '#ffcc00'),
+            size: Math.random() * 3 + 1, type: 'spark'
+        });
+    }
+
+    mech.heat += mech.heatPerShot;
+    shakeAmount = Math.max(shakeAmount, isHeavy ? 4 : 2);
+
+    if (isFocus) AudioEngine.shootFocus();
+    else if (isHeavy) AudioEngine.shootHeavy();
+    else AudioEngine.shoot();
+
+    if (mech.heat >= mech.maxHeat) {
+        mech.isShutdown = true;
+        mech.shutdownTimer = 180;
+        mech.heat = mech.maxHeat;
+        shakeAmount = 15;
+        screenFlash = { r: 1, g: 0, b: 0, alpha: 0.5 };
+        AudioEngine.meltdown();
+    }
+}
+
+// ==========================================
+// GRAZING (Touhou-style)
+// ==========================================
+function checkGraze(bx, by) {
+    let dx = bx - mech.x;
+    let dy = by - mech.y;
+    let dist = Math.sqrt(dx * dx + dy * dy);
+
+    // Graze: bullet is within graze radius but OUTSIDE hitbox
+    if (dist < mech.grazeRadius && dist > mech.hitboxRadius + 4) {
+        if (grazeTimer <= 0) { // Prevent graze spam from same bullet cluster
+            grazeCount++;
+            grazeTimer = 6; // Cooldown frames between graze counts
+            grazeFlash = 8;
+
+            // Score bonus
+            let grazeScore = Math.floor(5 * (mech.grazeScoreMult || 1));
+            score += grazeScore;
+
+            // Heat reduction (reward for risky play)
+            mech.heat = Math.max(0, mech.heat - 1.5);
+
+            // Visual spark
+            let angle = Math.atan2(mech.y - by, mech.x - bx);
+            for (let i = 0; i < 3; i++) {
+                particles.push({
+                    x: mech.x + Math.cos(angle) * mech.hitboxRadius,
+                    y: mech.y + Math.sin(angle) * mech.hitboxRadius,
+                    dx: Math.cos(angle) * 3 + (Math.random() - 0.5) * 2,
+                    dy: Math.sin(angle) * 3 + (Math.random() - 0.5) * 2,
+                    life: 12, maxLife: 12, color: '#ffffff', size: 2, type: 'spark'
+                });
+            }
+
+            addDamageNumber(mech.x, mech.y - 20, `GRAZE +${grazeScore}`, '#aaddff');
+
+            // Only play sound every few grazes to avoid audio spam
+            if (grazeCount % 3 === 0) AudioEngine.graze();
+        }
+        return true;
+    }
+    return false;
+}
+
+// ==========================================
+// DAMAGE NUMBERS
+// ==========================================
+function addDamageNumber(x, y, text, color) {
+    damageNumbers.push({
+        x: x + (Math.random() - 0.5) * 20,
+        y: y - 10,
+        text, color,
+        life: 45, maxLife: 45,
+        dy: -1.5
+    });
+}
+
+function addKillFeed(text, color) {
+    killFeed.push({ text, color, life: 180 });
+    if (killFeed.length > 6) killFeed.shift();
+}
+
+// ==========================================
+// COMBO SYSTEM
+// ==========================================
+function addKill(enemy) {
+    comboTimer = 120;
+    comboCount++;
+    if (comboCount >= 5) comboMultiplier = 2;
+    else if (comboCount >= 10) comboMultiplier = 3;
+    else if (comboCount >= 20) comboMultiplier = 4;
+    else if (comboCount >= 30) comboMultiplier = 5;
+    else comboMultiplier = 1;
+
+    let baseScore = enemy.score || 15;
+    let totalScore = Math.floor(baseScore * comboMultiplier);
+    score += totalScore;
+
+    if (comboMultiplier > 1) {
+        addDamageNumber(enemy.x, enemy.y, `x${comboMultiplier}`, '#ffdd00');
+    }
+    addKillFeed(`${enemy.type} destroyed +${totalScore}${comboMultiplier > 1 ? ` (x${comboMultiplier})` : ''}`, '#aaa');
+}
+
+// ==========================================
+// COLLISION
+// ==========================================
+function rectCollision(x, y, w, h, x2, y2, w2, h2) {
+    return x < x2 + w2 && x + w > x2 && y < y2 + h2 && y + h > y2;
+}
+
+function circleCollision(x1, y1, r1, x2, y2, r2) {
+    let dx = x2 - x1, dy = y2 - y1;
+    return dx * dx + dy * dy < (r1 + r2) * (r1 + r2);
+}
+
+// ==========================================
+// MAIN UPDATE
+// ==========================================
+function update() {
+    if (gameState !== 'PLAYING') return;
+    frameCount++;
+    waveTimer++;
+
+    if (shakeAmount > 0) shakeAmount *= 0.9;
+    if (shakeAmount < 0.1) shakeAmount = 0;
+    if (screenFlash.alpha > 0) screenFlash.alpha *= 0.9;
+
+    // Combo decay
+    if (comboTimer > 0) {
+        comboTimer--;
+        if (comboTimer <= 0) { comboCount = 0; comboMultiplier = 1; }
+    }
+
+    // Graze timer decay
+    if (grazeTimer > 0) grazeTimer--;
+    if (grazeFlash > 0) grazeFlash--;
+
+    // Protocol announcement decay
+    if (protocolAnnouncement) {
+        protocolAnnouncement.timer--;
+        if (protocolAnnouncement.timer <= 0) protocolAnnouncement = null;
+    }
+
+    // Kill feed decay
+    killFeed.forEach(k => k.life--);
+    killFeed = killFeed.filter(k => k.life > 0);
+
+    // ---- PLAYER MOVEMENT (with Focus Mode) ----
+    if (!mech.isShutdown && !mech.isDashing) {
+        let nextX = mech.x, nextY = mech.y;
+        let mx = 0, my = 0;
+        if (keys['w']) my -= 1;
+        if (keys['s']) my += 1;
+        if (keys['a']) mx -= 1;
+        if (keys['d']) mx += 1;
+        if (mx || my) {
+            let len = Math.sqrt(mx * mx + my * my);
+            // Focus mode slows movement to 40%
+            let speedMult = focusMode ? 0.4 : 1.0;
+            nextX += (mx / len) * mech.speed * speedMult;
+            nextY += (my / len) * mech.speed * speedMult;
+        }
+
+        let blocked = false;
+        obstacles.forEach(obs => {
+            if (rectCollision(nextX - mech.radius, nextY - mech.radius, mech.radius * 2, mech.radius * 2,
+                              obs.x, obs.y, obs.w, obs.h)) blocked = true;
+        });
+
+        if (!blocked) {
+            mech.x = Math.max(mech.radius, Math.min(W - mech.radius, nextX));
+            mech.y = Math.max(mech.radius, Math.min(H - mech.radius, nextY));
+        }
+
+        // Thrust particles (more visible in focus mode)
+        mech.thrustParticleTimer++;
+        if ((mx || my) && mech.thrustParticleTimer % 3 === 0) {
+            let ta = Math.atan2(my, mx);
+            particles.push({
+                x: mech.x - Math.cos(ta) * 15,
+                y: mech.y - Math.sin(ta) * 15,
+                dx: -Math.cos(ta) * (1 + Math.random()), dy: -Math.sin(ta) * (1 + Math.random()),
+                life: 12, maxLife: 12,
+                color: focusMode ? '#663355' : '#444',
+                size: 2 + Math.random() * 2, type: 'smoke'
+            });
+        }
+
+        // Focus mode visual particle ring
+        if (focusMode && frameCount % 4 === 0) {
+            let fa = Math.random() * Math.PI * 2;
+            particles.push({
+                x: mech.x + Math.cos(fa) * mech.grazeRadius,
+                y: mech.y + Math.sin(fa) * mech.grazeRadius,
+                dx: Math.cos(fa) * 0.5, dy: Math.sin(fa) * 0.5,
+                life: 10, maxLife: 10, color: '#ff88aa', size: 1.5, type: 'spark'
+            });
+        }
+    }
+
+    // Dash movement
+    if (mech.isDashing) {
+        mech.dashTimer--;
+        mech.x += Math.cos(mech.dashAngle) * mech.dashSpeed;
+        mech.y += Math.sin(mech.dashAngle) * mech.dashSpeed;
+        mech.x = Math.max(mech.radius, Math.min(W - mech.radius, mech.x));
+        mech.y = Math.max(mech.radius, Math.min(H - mech.radius, mech.y));
+        mech.dashTrail.push({ x: mech.x, y: mech.y, life: 15 });
+        for (let i = 0; i < 3; i++) {
+            particles.push({
+                x: mech.x + (Math.random() - 0.5) * 10, y: mech.y + (Math.random() - 0.5) * 10,
+                dx: (Math.random() - 0.5) * 2, dy: (Math.random() - 0.5) * 2,
+                life: 10, maxLife: 10, color: mech.color, size: 3, type: 'smoke'
+            });
+        }
+        if (mech.dashTimer <= 0) mech.isDashing = false;
+    }
+
+    if (mech.dashCooldownTimer > 0) mech.dashCooldownTimer--;
+    mech.dashTrail.forEach(t => t.life--);
+    mech.dashTrail = mech.dashTrail.filter(t => t.life > 0);
+    if (mech.invulnTimer > 0) mech.invulnTimer--;
+
+    mech.angle = Math.atan2(mouse.y - mech.y, mouse.x - mech.x);
+    if (mouse.down) shoot();
+    if (mech.fireCooldown > 0) mech.fireCooldown--;
+    if (mech.heat > 0) mech.heat = Math.max(0, mech.heat - mech.passiveCooling);
+
+    if (mech.regen) mech.health = Math.min(mech.maxHealth, mech.health + mech.regen);
+    if (keys[' ']) startDash();
+
+    if (mech.isShutdown) {
+        mech.shutdownTimer--;
+        if (mech.shutdownTimer <= 0) { mech.isShutdown = false; mech.heat = 0; }
+    }
+
+    // ---- BULLETS ----
+    bullets.forEach(b => {
+        b.trail.push({ x: b.x, y: b.y });
+        if (b.trail.length > 5) b.trail.shift();
+        b.x += b.dx; b.y += b.dy; b.life--;
+        obstacles.forEach(obs => {
+            if (rectCollision(b.x - 4, b.y - 4, 8, 8, obs.x, obs.y, obs.w, obs.h)) {
+                b.life = 0;
+                obs.health -= b.damage;
+                for (let i = 0; i < 6; i++) {
+                    particles.push({
+                        x: b.x, y: b.y,
+                        dx: (Math.random() - 0.5) * 5, dy: (Math.random() - 0.5) * 5,
+                        life: 18, maxLife: 18, color: '#ffaa00', size: 2, type: 'spark'
+                    });
+                }
+            }
+        });
+    });
+    bullets = bullets.filter(b => b.life > 0 && b.x > -20 && b.x < W + 20 && b.y > -20 && b.y < H + 20);
+
+    obstacles = obstacles.filter(obs => {
+        if (obs.health <= 0) {
+            for (let i = 0; i < 20; i++) {
+                particles.push({
+                    x: obs.x + obs.w / 2, y: obs.y + obs.h / 2,
+                    dx: (Math.random() - 0.5) * 7, dy: (Math.random() - 0.5) * 7,
+                    life: 45, maxLife: 45, color: '#555', size: 3 + Math.random() * 4, type: 'smoke'
+                });
+            }
+            AudioEngine.explode();
+            return false;
+        }
+        return true;
+    });
+
+    // ---- ENEMY BULLETS (with GRAZING) ----
+    enemyBullets.forEach(b => {
+        b.x += b.dx; b.y += b.dy; b.life--;
+
+        // Touhou-style: use small hitboxRadius for actual collision
+        let hitRadius = b.size ? b.size * 0.6 : 3;
+        if (circleCollision(b.x, b.y, hitRadius, mech.x, mech.y, mech.hitboxRadius) &&
+            !mech.isShutdown && mech.invulnTimer <= 0) {
+            b.life = 0;
+            mech.health -= 8;
+            mech.invulnTimer = 5;
+            shakeAmount = 5;
+            screenFlash = { r: 1, g: 0.2, b: 0.2, alpha: 0.2 };
+            AudioEngine.hit();
+            addDamageNumber(mech.x, mech.y, '-8', '#ff4444');
+        } else if (!mech.isShutdown) {
+            // Check graze
+            checkGraze(b.x, b.y);
+        }
+    });
+    enemyBullets = enemyBullets.filter(b => b.life > 0 && b.x > -20 && b.x < W + 20 && b.y > -20 && b.y < H + 20);
+
+    // ---- ENEMIES ----
+    enemies.forEach(e => {
+        let dx = mech.x - e.x, dy = mech.y - e.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let ndx = dx / dist, ndy = dy / dist;
+
+        if (e.flashTimer > 0) e.flashTimer--;
+
+        // Phantom teleport
+        if (e.type === 'Phantom' && e.teleportTimer !== undefined) {
+            e.teleportTimer--;
+            if (e.teleportTimer <= 0) {
+                let tAngle = Math.atan2(mech.y - e.y, mech.x - e.x) + (Math.random() - 0.5) * 1.5;
+                let tDist = 100 + Math.random() * 100;
+                e.x = mech.x + Math.cos(tAngle) * tDist;
+                e.y = mech.y + Math.sin(tAngle) * tDist;
+                e.teleportTimer = 90 + Math.floor(Math.random() * 60);
+                for (let i = 0; i < 10; i++) {
+                    particles.push({
+                        x: e.x, y: e.y,
+                        dx: (Math.random() - 0.5) * 4, dy: (Math.random() - 0.5) * 4,
+                        life: 15, maxLife: 15, color: '#88ffcc', size: 2, type: 'spark'
+                    });
+                }
+            }
+        }
+
+        // Movement AI
+        if (e.type === 'Sentry') {
+            let preferred = 250;
+            if (dist > preferred) { e.x += ndx * e.speed; e.y += ndy * e.speed; }
+            else if (dist < preferred - 50) { e.x -= ndx * e.speed; e.y -= ndy * e.speed; }
+            e.shootCooldown--;
+            if (e.shootCooldown <= 0) {
+                let a = Math.atan2(mech.y - e.y, mech.x - e.x);
+                enemyBullets.push({ x: e.x, y: e.y, dx: Math.cos(a) * 5, dy: Math.sin(a) * 5, life: 100, size: 4 });
+                e.shootCooldown = Math.max(40, 80 - wave * 2);
+            }
+        } else if (e.type === 'Boss') {
+            // --- BOSS PROTOCOL SYSTEM ---
+            let preferred = 220;
+            if (dist > preferred) { e.x += ndx * e.speed; e.y += ndy * e.speed; }
+            else if (dist < preferred - 50) { e.x -= ndx * e.speed; e.y -= ndy * e.speed; }
+            e.angle = Math.atan2(mech.y - e.y, mech.x - e.x);
+
+            // Phase transition
+            let hpRatio = e.health / e.maxHealth;
+            if (hpRatio < 0.5 && e.phase === 1) {
+                e.phase = 2;
+                e.speed *= 1.5;
+                e.protocols = e.phase2Protocols;
+                e.currentProtocolIdx = 0;
+                e.protocolTimer = 0;
+                e.protocolActive = true;
+                // Clear existing bullets for dramatic effect
+                enemyBullets = [];
+                shakeAmount = 15;
+                screenFlash = { r: 1, g: 0.3, b: 0, alpha: 0.5 };
+                announceProtocol(e.protocols[0].name, e.protocols[0].sub, '#ff0000');
+                e.protocolName = e.protocols[0].name;
+                e.protocolColor = e.protocols[0].color;
+            }
+
+            // Execute current protocol
+            if (e.protocolActive && e.protocols && e.protocols.length > 0) {
+                e.protocolTimer++;
+                let currentProto = e.protocols[e.currentProtocolIdx % e.protocols.length];
+
+                // Announce protocol on start
+                if (e.protocolTimer === 1) {
+                    announceProtocol(currentProto.name, currentProto.sub, currentProto.color);
+                    e.protocolName = currentProto.name;
+                    e.protocolColor = currentProto.color;
+                }
+
+                // Run protocol pattern
+                currentProto.pattern(e, e.protocolTimer);
+
+                // Check protocol completion
+                if (e.protocolTimer >= currentProto.duration) {
+                    e.currentProtocolIdx++;
+                    e.protocolTimer = 0;
+                    // Brief pause between protocols (grace period)
+                    e.protocolActive = false;
+                    setTimeout(() => { if (e.health > 0) e.protocolActive = true; }, 500);
+                }
+            }
+        } else if (e.type === 'Phantom') {
+            e.x += (ndx + (Math.random() - 0.5) * 0.8) * e.speed;
+            e.y += (ndy + (Math.random() - 0.5) * 0.8) * e.speed;
+            e.alpha = 0.3 + Math.sin(frameCount * 0.1) * 0.3;
+        } else {
+            e.x += ndx * e.speed;
+            e.y += ndy * e.speed;
+        }
+
+        // Contact damage (uses hitboxRadius for Touhou feel)
+        if (circleCollision(e.x, e.y, e.radius, mech.x, mech.y, mech.hitboxRadius + 10) &&
+            !mech.isShutdown && mech.invulnTimer <= 0) {
+            mech.health -= e.damage;
+            mech.invulnTimer = 10;
+            shakeAmount = e.type === 'Brute' ? 6 : 3;
+            screenFlash = { r: 1, g: 0, b: 0, alpha: 0.15 };
+            addDamageNumber(mech.x, mech.y, `-${Math.floor(e.damage * 10) / 10}`, '#ff4444');
+        }
+
+        // Bullet-enemy collision with POINT-BLANK BONUS
+        bullets.forEach(b => {
+            if (b.life <= 0) return;
+            let bdx = b.x - e.x, bdy = b.y - e.y;
+            if (bdx * bdx + bdy * bdy < e.radius * e.radius) {
+                let dmg = b.damage;
+
+                // Point-blank bonus: extra damage when close to enemy
+                let distToEnemy = Math.sqrt((mech.x - e.x) ** 2 + (mech.y - e.y) ** 2);
+                if (distToEnemy < e.radius + mech.radius + 40) {
+                    dmg = Math.floor(dmg * 1.5);
+                    if (frameCount % 15 === 0) {
+                        addDamageNumber(e.x, e.y - e.radius - 10, 'POINT BLANK!', '#ff4488');
+                        AudioEngine.pointBlank();
+                        screenFlash = { r: 1, g: 0.2, b: 0.3, alpha: 0.1 };
+                    }
+                }
+
+                // Shielded enemies
+                if (e.shield && e.shield > 0) {
+                    e.shield -= dmg;
+                    if (e.shield < 0) { e.health += e.shield; e.shield = 0; }
+                    dmg = 0;
+                    for (let i = 0; i < 4; i++) {
+                        particles.push({
+                            x: e.x, y: e.y,
+                            dx: (Math.random() - 0.5) * 3, dy: (Math.random() - 0.5) * 3,
+                            life: 10, maxLife: 10, color: '#3399ff', size: 2, type: 'spark'
+                        });
+                    }
+                }
+
+                if (dmg > 0) e.health -= dmg;
+                b.life = 0;
+                e.flashTimer = 4;
+                addDamageNumber(e.x, e.y, Math.floor(b.damage).toString(), '#ffaa00');
+
+                for (let i = 0; i < 5; i++) {
+                    particles.push({
+                        x: b.x, y: b.y,
+                        dx: (Math.random() - 0.5) * 6, dy: (Math.random() - 0.5) * 6,
+                        life: 18, maxLife: 18, color: '#ffaa00', size: 2, type: 'spark'
+                    });
+                }
+            }
+        });
+
+        // Death
+        if (e.health <= 0) {
+            addKill(e);
+            shakeAmount = e.type === 'Boss' ? 20 : (e.type === 'Brute' ? 6 : 3);
+
+            let pCount = e.type === 'Boss' ? 60 : (e.type === 'Brute' ? 30 : 15);
+            for (let i = 0; i < pCount; i++) {
+                let col = e.type === 'Boss' ? `hsl(${Math.random()*30}, 100%, ${40+Math.random()*30}%)` : '#888';
+                particles.push({
+                    x: e.x, y: e.y,
+                    dx: (Math.random() - 0.5) * 8, dy: (Math.random() - 0.5) * 8,
+                    life: 35 + Math.random() * 20, maxLife: 55, color: col,
+                    size: e.type === 'Boss' ? 4 : (2 + Math.random() * 2),
+                    type: Math.random() > 0.5 ? 'spark' : 'smoke'
+                });
+            }
+
+            if (e.type === 'Boss' || e.type === 'Brute') {
+                particles.push({
+                    x: e.x, y: e.y, dx: 0, dy: 0,
+                    life: 15, maxLife: 15, color: '#ff4400',
+                    size: 10, type: 'ring', maxRadius: e.type === 'Boss' ? 120 : 60
+                });
+                AudioEngine.bigExplode();
+            } else {
+                AudioEngine.explode();
+            }
+
+            spawnPickup(e.x, e.y);
+        }
+    });
+    enemies = enemies.filter(e => e.health > 0);
+
+    // ---- PICKUPS ----
+    let pickupRange = mech.pickupRange || 60;
+    let autoRange = keys['e'] ? pickupRange * 2.5 : pickupRange;
+    pickups.forEach(p => {
+        p.life--;
+        p.pulse += 0.08;
+        let dx = mech.x - p.x, dy = mech.y - p.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < autoRange) { p.x += (dx / dist) * 3; p.y += (dy / dist) * 3; }
+        if (dist < mech.radius + p.radius) {
+            p.life = 0;
+            AudioEngine.pickup();
+            if (p.type === 'health') {
+                mech.health = Math.min(mech.maxHealth, mech.health + p.value);
+                addDamageNumber(mech.x, mech.y, `+${p.value}`, '#33ff66');
+            } else if (p.type === 'scrap') {
+                let scrapScore = Math.floor(p.value * comboMultiplier);
+                score += scrapScore;
+                addDamageNumber(mech.x, mech.y, `+${scrapScore}`, '#ffdd00');
+            } else if (p.type === 'coolant') {
+                mech.heat = Math.max(0, mech.heat + p.value);
+                addDamageNumber(mech.x, mech.y, 'COOL', '#00ccff');
+            } else if (p.type === 'overcharge') {
+                mech.health = Math.min(mech.maxHealth, mech.health + p.value);
+                mech.heat = Math.max(0, mech.heat - 30);
+                addDamageNumber(mech.x, mech.y, 'OVERCHARGE!', '#ff6600');
+                screenFlash = { r: 1, g: 0.4, b: 0, alpha: 0.2 };
+            }
+        }
+    });
+    pickups = pickups.filter(p => p.life > 0);
+
+    // ---- PARTICLES ----
+    particles.forEach(p => {
+        p.x += p.dx; p.y += p.dy; p.life--;
+        if (p.type === 'smoke') { p.size += 0.15; p.dx *= 0.96; p.dy *= 0.96; }
+        if (p.type === 'spark') { p.dx *= 0.95; p.dy *= 0.95; }
+        if (p.type === 'ring') { p.size += (p.maxRadius - p.size) * 0.2; }
+    });
+    particles = particles.filter(p => p.life > 0);
+
+    // ---- DAMAGE NUMBERS ----
+    damageNumbers.forEach(d => { d.y += d.dy; d.dy *= 0.97; d.life--; });
+    damageNumbers = damageNumbers.filter(d => d.life > 0);
+
+    // ---- SPAWNING ----
+    let bossAlive = enemies.some(e => e.type === 'Boss');
+    if (!bossAlive) {
+        let spawnRate = 0.02 + (wave * 0.004);
+        if (Math.random() < spawnRate) spawnEnemy();
+    }
+
+    // Wave progression
+    if (score > wave * 180) {
+        wave++;
+        waveTimer = 0;
+        AudioEngine.waveStart();
+        if (wave % 5 === 0) spawnBoss();
+        else if (wave % 3 === 0) generateTerrain();
+    }
+
+    // Upgrade trigger
+    if (score >= nextUpgradeScore) {
+        gameState = 'UPGRADE';
+        nextUpgradeScore += 250;
+        rollUpgrades();
+        AudioEngine.upgrade();
+    }
+
+    // Game over
+    if (mech.health <= 0) {
+        gameState = 'GAMEOVER';
+        shakeAmount = 30;
+        screenFlash = { r: 1, g: 0, b: 0, alpha: 0.8 };
+        AudioEngine.bigExplode();
+        for (let i = 0; i < 80; i++) {
+            let a = Math.random() * Math.PI * 2;
+            let s = Math.random() * 8;
+            particles.push({
+                x: mech.x, y: mech.y,
+                dx: Math.cos(a) * s, dy: Math.sin(a) * s,
+                life: 50 + Math.random() * 30, maxLife: 80,
+                color: Math.random() > 0.5 ? '#ff4400' : '#ffaa00',
+                size: 2 + Math.random() * 4, type: 'spark'
+            });
+        }
+    }
+}
+
+// ==========================================
+// DRAWING - MECH
+// ==========================================
+function drawMech(x, y, angle, color, accent, size, flash) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.beginPath();
+    ctx.ellipse(3, 3, size + 2, size * 0.8 + 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    let legOffset = Math.sin(frameCount * 0.15) * 3;
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(-size + 3, -size - 2 + legOffset, 7, size * 2 + 4);
+    ctx.fillRect(size - 10, -size - 2 - legOffset, 7, size * 2 + 4);
+    ctx.fillStyle = '#333';
+    ctx.fillRect(-size + 5, -size + legOffset, 3, size * 2);
+    ctx.fillRect(size - 8, -size - legOffset, 3, size * 2);
+
+    ctx.fillStyle = flash ? '#fff' : color;
+    ctx.beginPath();
+    ctx.moveTo(-size + 4, -size + 4);
+    ctx.lineTo(size - 4, -size + 6);
+    ctx.lineTo(size, -size + 10);
+    ctx.lineTo(size, size - 10);
+    ctx.lineTo(size - 4, size - 6);
+    ctx.lineTo(-size + 4, size - 4);
+    ctx.lineTo(-size, size);
+    ctx.lineTo(-size, -size);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#111';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-size + 10, -size + 8);
+    ctx.lineTo(-size + 10, size - 8);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -size + 8);
+    ctx.lineTo(0, size - 8);
+    ctx.stroke();
+
+    ctx.fillStyle = accent || '#888';
+    ctx.fillRect(-size + 6, -3, size * 0.6, 2);
+    ctx.fillRect(-size + 6, 2, size * 0.6, 2);
+
+    ctx.fillStyle = '#0a0a0a';
+    ctx.fillRect(-7, -7, 14, 14);
+    ctx.fillStyle = mech.isShutdown ? '#660000' : '#cc0000';
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = mech.isShutdown ? '#660000' : '#ff0000';
+    ctx.fillRect(-3, -5, 6, 3);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#3a3a3a';
+    ctx.fillRect(size - 4, -5, 28, 10);
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(size + 20, -6, 6, 12);
+    ctx.strokeStyle = '#4a4a4a';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(size + 2, -5); ctx.lineTo(size + 2, 5);
+    ctx.moveTo(size + 8, -5); ctx.lineTo(size + 8, 5);
+    ctx.moveTo(size + 14, -5); ctx.lineTo(size + 14, 5);
+    ctx.stroke();
+
+    if (mech.fireCooldown > mech.fireRate * 0.7) {
+        ctx.fillStyle = '#ff8800';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ff6600';
+        ctx.beginPath();
+        ctx.arc(size + 26, 0, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+    }
+
+    ctx.restore();
+}
+
+// ==========================================
+// DRAWING - ENEMIES
+// ==========================================
+function drawEnemy(e) {
+    ctx.save();
+    ctx.translate(e.x, e.y);
+    let flash = e.flashTimer > 0;
+    let col = flash ? '#fff' : e.color;
+
+    if (e.type === 'Grunt' || e.type === 'Swarm') {
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        let aToMech = Math.atan2(mech.y - e.y, mech.x - e.x);
+        ctx.rotate(aToMech);
+        ctx.moveTo(e.radius, 0);
+        ctx.lineTo(-e.radius * 0.7, -e.radius * 0.8);
+        ctx.lineTo(-e.radius * 0.4, 0);
+        ctx.lineTo(-e.radius * 0.7, e.radius * 0.8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = '#ff0000';
+        ctx.shadowBlur = 4; ctx.shadowColor = '#ff0000';
+        ctx.beginPath(); ctx.arc(e.radius * 0.3, 0, 2, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+    } else if (e.type === 'Brute') {
+        ctx.fillStyle = col;
+        ctx.fillRect(-e.radius, -e.radius, e.radius * 2, e.radius * 2);
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 2;
+        ctx.strokeRect(-e.radius, -e.radius, e.radius * 2, e.radius * 2);
+        ctx.fillStyle = '#994400';
+        ctx.fillRect(-e.radius + 4, -e.radius + 4, e.radius - 4, 6);
+        ctx.fillRect(-e.radius + 4, e.radius - 10, e.radius - 4, 6);
+        ctx.fillStyle = '#111';
+        ctx.fillRect(-10, -10, 20, 20);
+        ctx.fillStyle = '#ff3300';
+        ctx.shadowBlur = 6; ctx.shadowColor = '#ff3300';
+        ctx.fillRect(-6, -2, 12, 4);
+        ctx.shadowBlur = 0;
+    } else if (e.type === 'Sentry') {
+        let aToMech = Math.atan2(mech.y - e.y, mech.x - e.x);
+        ctx.rotate(aToMech);
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(e.radius, 0);
+        ctx.lineTo(0, -e.radius * 0.7);
+        ctx.lineTo(-e.radius, 0);
+        ctx.lineTo(0, e.radius * 0.7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.fillStyle = '#ff00ff';
+        ctx.shadowBlur = 8; ctx.shadowColor = '#ff00ff';
+        ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+    } else if (e.type === 'Boss') {
+        ctx.rotate(e.angle);
+        let r = e.radius;
+
+        ctx.fillStyle = '#220000';
+        ctx.fillRect(-r, -r, r * 2, r * 2);
+        ctx.fillStyle = flash ? '#fff' : e.color;
+        ctx.fillRect(-r + 6, -r + 6, r * 2 - 12, r * 2 - 12);
+        ctx.strokeStyle = '#660000'; ctx.lineWidth = 2;
+        ctx.strokeRect(-r + 6, -r + 6, r * 2 - 12, r * 2 - 12);
+        ctx.strokeRect(-r + 12, -r + 12, r * 2 - 24, r * 2 - 24);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(-18, -18, 36, 36);
+
+        // Protocol-colored core
+        let coreColor = e.protocolColor || (e.phase === 2 ? '#ff6600' : '#ff0000');
+        ctx.fillStyle = coreColor;
+        ctx.shadowBlur = 10; ctx.shadowColor = coreColor;
+        ctx.fillRect(-12, -4, 24, 4);
+        ctx.fillRect(-4, -12, 4, 24);
+        ctx.shadowBlur = 0;
+
+        ctx.fillStyle = '#440000';
+        ctx.fillRect(r - 10, -10, 30, 8);
+        ctx.fillRect(r - 10, 2, 30, 8);
+
+        // Phase 2 aura
+        if (e.phase === 2) {
+            ctx.strokeStyle = `rgba(255, 100, 0, ${0.3 + Math.sin(frameCount * 0.1) * 0.2})`;
+            ctx.lineWidth = 3;
+            ctx.strokeRect(-r - 4, -r - 4, r * 2 + 8, r * 2 + 8);
+        }
+
+        // Protocol indicator ring (rotating)
+        if (e.protocolActive) {
+            let progColor = e.protocolColor || '#ff6600';
+            ctx.strokeStyle = progColor;
+            ctx.lineWidth = 2;
+            ctx.globalAlpha = 0.4 + Math.sin(frameCount * 0.15) * 0.2;
+            let pAngle = frameCount * 0.03;
+            ctx.beginPath();
+            ctx.arc(0, 0, r + 8, pAngle, pAngle + Math.PI * 0.6);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, 0, r + 8, pAngle + Math.PI, pAngle + Math.PI * 1.6);
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+
+        ctx.rotate(-e.angle);
+        let barW = r * 2;
+        let barH = 6;
+        ctx.fillStyle = '#222';
+        ctx.fillRect(-barW / 2, -r - 20, barW, barH);
+        let hpRatio = e.health / e.maxHealth;
+        ctx.fillStyle = hpRatio > 0.5 ? '#cc0000' : '#ff3300';
+        ctx.fillRect(-barW / 2, -r - 20, barW * hpRatio, barH);
+        ctx.strokeStyle = '#555'; ctx.lineWidth = 1;
+        ctx.strokeRect(-barW / 2, -r - 20, barW, barH);
+
+    } else if (e.type === 'Shielded') {
+        let aToMech = Math.atan2(mech.y - e.y, mech.x - e.x);
+        ctx.rotate(aToMech);
+        ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(0, 0, e.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5; ctx.stroke();
+        if (e.shield > 0) {
+            ctx.strokeStyle = `rgba(51, 153, 255, ${0.4 + Math.sin(frameCount * 0.15) * 0.2})`;
+            ctx.lineWidth = 3;
+            ctx.beginPath(); ctx.arc(0, 0, e.radius + 6, 0, Math.PI * 2); ctx.stroke();
+        }
+        ctx.fillStyle = '#001133';
+        ctx.fillRect(-6, -6, 12, 12);
+        ctx.fillStyle = '#3399ff';
+        ctx.shadowBlur = 4; ctx.shadowColor = '#3399ff';
+        ctx.fillRect(-2, -2, 4, 4);
+        ctx.shadowBlur = 0;
+    } else if (e.type === 'Phantom') {
+        ctx.globalAlpha = e.alpha || 0.5;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.moveTo(0, -e.radius);
+        ctx.bezierCurveTo(e.radius, -e.radius * 0.5, e.radius, e.radius * 0.5, 0, e.radius);
+        ctx.bezierCurveTo(-e.radius, e.radius * 0.5, -e.radius, -e.radius * 0.5, 0, -e.radius);
+        ctx.fill();
+        ctx.strokeStyle = '#44ffbb'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+}
+
+// ==========================================
+// DRAWING - MAIN GAME
+// ==========================================
+function drawGame() {
+    ctx.save();
+    if (shakeAmount > 0) {
+        ctx.translate((Math.random() - 0.5) * shakeAmount, (Math.random() - 0.5) * shakeAmount);
+    }
+
+    ctx.fillStyle = '#080808';
+    ctx.fillRect(-50, -50, W + 100, H + 100);
+
+    ctx.strokeStyle = '#121212';
+    ctx.lineWidth = 0.5;
+    let gridOffset = (frameCount * 0.3) % 40;
+    for (let x = -40 + gridOffset; x < W + 40; x += 40) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let y = -40 + gridOffset; y < H + 40; y += 40) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    bgStars.forEach(s => {
+        let b = s.brightness + Math.sin(frameCount * s.twinkleSpeed) * 0.1;
+        ctx.fillStyle = `rgba(200, 200, 200, ${Math.max(0, b)})`;
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+    });
+
+    // Terrain
+    obstacles.forEach(obs => {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fillRect(obs.x + 4, obs.y + 4, obs.w, obs.h);
+        let dmgRatio = obs.health / obs.maxHealth;
+        ctx.fillStyle = dmgRatio > 0.5 ? '#222' : '#2a1a1a';
+        ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+        ctx.strokeStyle = dmgRatio > 0.5 ? '#444' : '#553333';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(obs.x, obs.y, obs.w, obs.h);
+        if (dmgRatio < 0.7) {
+            ctx.strokeStyle = '#553322'; ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(obs.x + obs.w * 0.3, obs.y);
+            ctx.lineTo(obs.x + obs.w * 0.5, obs.y + obs.h * 0.5);
+            ctx.lineTo(obs.x + obs.w * 0.7, obs.y + obs.h);
+            ctx.stroke();
+        }
+        ctx.fillStyle = '#333';
+        ctx.fillRect(obs.x + 5, obs.y + 5, 8, 8);
+        ctx.fillRect(obs.x + obs.w - 13, obs.y + 5, 8, 8);
+        ctx.fillRect(obs.x + 5, obs.y + obs.h - 13, 8, 8);
+        ctx.fillRect(obs.x + obs.w - 13, obs.y + obs.h - 13, 8, 8);
+        ctx.fillStyle = '#3a3a3a';
+        ctx.fillRect(obs.x + 7, obs.y + 7, 4, 4);
+        ctx.fillRect(obs.x + obs.w - 11, obs.y + 7, 4, 4);
+        ctx.fillRect(obs.x + 7, obs.y + obs.h - 11, 4, 4);
+        ctx.fillRect(obs.x + obs.w - 11, obs.y + obs.h - 11, 4, 4);
+    });
+
+    // Pickups
+    pickups.forEach(p => {
+        let pulse = Math.sin(p.pulse) * 0.3 + 1;
+        let r = p.radius * pulse;
+        ctx.fillStyle = p.color;
+        ctx.shadowBlur = 12; ctx.shadowColor = p.color;
+        ctx.globalAlpha = 0.3 + Math.sin(p.pulse) * 0.15;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 8px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.type === 'health' ? '+' : p.type === 'scrap' ? '$' : p.type === 'coolant' ? '~' : '!', p.x, p.y + 3);
+        ctx.shadowBlur = 0;
+    });
+
+    // Particles
+    particles.forEach(p => {
+        let alpha = Math.min(1, p.life / (p.maxLife * 0.3));
+        ctx.globalAlpha = alpha;
+        if (p.type === 'ring') {
+            ctx.strokeStyle = p.color;
+            ctx.lineWidth = 3 * (p.life / p.maxLife);
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.stroke();
+        } else if (p.type === 'spark') {
+            ctx.fillStyle = p.color;
+            ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size);
+        } else {
+            ctx.fillStyle = p.color;
+            ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill();
+        }
+    });
+    ctx.globalAlpha = 1;
+
+    // Player bullets
+    bullets.forEach(b => {
+        if (b.trail.length > 1) {
+            ctx.strokeStyle = b.isFocus ? 'rgba(255, 100, 200, 0.4)' : 'rgba(255, 221, 0, 0.3)';
+            ctx.lineWidth = b.size;
+            ctx.beginPath();
+            ctx.moveTo(b.trail[0].x, b.trail[0].y);
+            for (let i = 1; i < b.trail.length; i++) ctx.lineTo(b.trail[i].x, b.trail[i].y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+        }
+        ctx.fillStyle = b.isFocus ? '#ff88cc' : '#ffee66';
+        ctx.shadowBlur = 6;
+        ctx.shadowColor = b.isFocus ? '#ff44aa' : '#ffcc00';
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+    });
+
+    // Enemy bullets (Touhou-style: larger, more visible, colored)
+    enemyBullets.forEach(b => {
+        let bSize = b.size || 5;
+        let bColor = b.color || '#ff00ff';
+
+        // Outer glow
+        ctx.fillStyle = bColor;
+        ctx.globalAlpha = 0.3;
+        ctx.beginPath(); ctx.arc(b.x, b.y, bSize + 3, 0, Math.PI * 2); ctx.fill();
+
+        // Main bullet
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = bColor;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = bColor;
+        ctx.beginPath(); ctx.arc(b.x, b.y, bSize, 0, Math.PI * 2); ctx.fill();
+
+        // Inner bright core (Touhou bullet style)
+        ctx.fillStyle = '#fff';
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath(); ctx.arc(b.x, b.y, bSize * 0.4, 0, Math.PI * 2); ctx.fill();
+
+        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
+    });
+
+    // Dash trail
+    mech.dashTrail.forEach(t => {
+        ctx.globalAlpha = t.life / 15 * 0.4;
+        ctx.fillStyle = mech.color;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, mech.radius * (t.life / 15), 0, Math.PI * 2);
+        ctx.fill();
+    });
+    ctx.globalAlpha = 1;
+
+    // Enemies
+    enemies.forEach(e => drawEnemy(e));
+
+    // Player mech
+    if (gameState === 'PLAYING' || gameState === 'UPGRADE') {
+        if (mech.invulnTimer > 0 && Math.floor(frameCount / 3) % 2 === 0) ctx.globalAlpha = 0.5;
+        if (mech.isDashing) ctx.globalAlpha = 0.7;
+        drawMech(mech.x, mech.y, mech.angle, mech.color, mech.accentColor, mech.radius, false);
+        ctx.globalAlpha = 1;
+
+        // === TOUHOU: Focus Mode Hitbox Display ===
+        if (focusMode && !mech.isShutdown) {
+            // Graze radius ring
+            ctx.strokeStyle = `rgba(255, 100, 150, ${0.2 + Math.sin(frameCount * 0.1) * 0.1})`;
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.arc(mech.x, mech.y, mech.grazeRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Precise hitbox dot (THE signature Touhou element)
+            ctx.fillStyle = '#ff4488';
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = '#ff4488';
+            ctx.beginPath();
+            ctx.arc(mech.x, mech.y, mech.hitboxRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+
+            // Inner bright core
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(mech.x, mech.y, mech.hitboxRadius * 0.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Crosshair lines
+            ctx.strokeStyle = 'rgba(255, 100, 150, 0.3)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(mech.x - mech.hitboxRadius - 6, mech.y);
+            ctx.lineTo(mech.x + mech.hitboxRadius + 6, mech.y);
+            ctx.moveTo(mech.x, mech.y - mech.hitboxRadius - 6);
+            ctx.lineTo(mech.x, mech.y + mech.hitboxRadius + 6);
+            ctx.stroke();
+        } else {
+            // Even without focus, show a subtle hitbox indicator
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+            ctx.beginPath();
+            ctx.arc(mech.x, mech.y, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Graze flash effect
+        if (grazeFlash > 0) {
+            ctx.strokeStyle = `rgba(200, 220, 255, ${grazeFlash / 8 * 0.5})`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(mech.x, mech.y, mech.grazeRadius + (8 - grazeFlash) * 2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+    }
+
+    // Damage numbers
+    damageNumbers.forEach(d => {
+        let alpha = d.life / d.maxLife;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = d.color;
+        ctx.font = 'bold 14px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(d.text, d.x, d.y);
+    });
+    ctx.globalAlpha = 1;
+
+    ctx.restore();
+
+    // Screen flash
+    if (screenFlash.alpha > 0.01) {
+        ctx.fillStyle = `rgba(${screenFlash.r * 255}, ${screenFlash.g * 255}, ${screenFlash.b * 255}, ${screenFlash.alpha})`;
+        ctx.fillRect(0, 0, W, H);
+    }
+
+    // HUD
+    drawHUD();
+}
+
+// ==========================================
+// HUD
+// ==========================================
+function drawHUD() {
+    // Top bar
+    let grad = ctx.createLinearGradient(0, 0, 0, 85);
+    grad.addColorStop(0, 'rgba(0, 0, 0, 0.7)');
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, 85);
+    ctx.strokeStyle = 'rgba(255, 50, 0, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, 85); ctx.lineTo(W, 85); ctx.stroke();
+
+    // Health bar
+    ctx.fillStyle = '#888'; ctx.font = '9px Courier New'; ctx.textAlign = 'left';
+    ctx.fillText('HULL INTEGRITY', 20, 14);
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(20, 18, 220, 14);
+    let hpRatio = Math.max(0, mech.health / mech.maxHealth);
+    let hpColor = mech.health > mech.maxHealth * 0.6 ? '#cc3333' :
+                  mech.health > mech.maxHealth * 0.3 ? '#cc6633' : '#ff0000';
+    ctx.fillStyle = hpColor;
+    ctx.fillRect(20, 18, 220 * hpRatio, 14);
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 1;
+    for (let i = 1; i < 10; i++) { let sx = 20 + 22 * i; ctx.beginPath(); ctx.moveTo(sx, 18); ctx.lineTo(sx, 32); ctx.stroke(); }
+    ctx.strokeStyle = '#555'; ctx.strokeRect(20, 18, 220, 14);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Courier New';
+    ctx.fillText(`${Math.floor(mech.health)} / ${mech.maxHealth}`, 80, 29);
+
+    // Heat bar
+    ctx.fillStyle = '#888'; ctx.font = '9px Courier New';
+    ctx.fillText('REACTOR CORE', 20, 43);
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(20, 47, 220, 14);
+    let heatRatio = Math.min(1, mech.heat / mech.maxHeat);
+    let heatColor = mech.heat > mech.maxHeat * 0.8 ? '#ff3300' : mech.heat > mech.maxHeat * 0.5 ? '#ff9933' : '#3399ff';
+    ctx.fillStyle = heatColor;
+    ctx.fillRect(20, 47, 220 * heatRatio, 14);
+    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+    for (let i = 1; i < 10; i++) { let sx = 20 + 22 * i; ctx.beginPath(); ctx.moveTo(sx, 47); ctx.lineTo(sx, 61); ctx.stroke(); }
+    ctx.strokeStyle = '#555'; ctx.strokeRect(20, 47, 220, 14);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 9px Courier New';
+    ctx.fillText(`${Math.floor(mech.heat)} / ${mech.maxHeat}`, 80, 58);
+
+    // Dash cooldown
+    ctx.fillStyle = '#888'; ctx.font = '9px Courier New';
+    ctx.fillText('DASH', 20, 73);
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(20, 77, 220, 6);
+    let dashRatio = Math.max(0, 1 - mech.dashCooldownTimer / mech.dashCooldown);
+    ctx.fillStyle = dashRatio >= 1 ? '#33ff66' : '#446644';
+    ctx.fillRect(20, 77, 220 * dashRatio, 6);
+    ctx.strokeStyle = '#444'; ctx.strokeRect(20, 77, 220, 6);
+    ctx.fillStyle = dashRatio >= 1 ? '#33ff66' : '#888';
+    ctx.fillText(dashRatio >= 1 ? 'READY' : Math.ceil(mech.dashCooldownTimer / 60) + 's', 250, 83);
+
+    // Score & Wave (right side)
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = '#ffdd00';
+    ctx.fillText(score.toString(), W - 20, 30);
+    ctx.font = '9px Courier New'; ctx.fillStyle = '#888';
+    ctx.fillText('SCRAP RECOVERED', W - 20, 14);
+    ctx.font = 'bold 16px Courier New'; ctx.fillStyle = '#aaa';
+    ctx.fillText(`WAVE ${wave}`, W - 20, 55);
+    ctx.font = '9px Courier New'; ctx.fillStyle = '#666';
+    ctx.fillText(`NEXT UPGRADE: ${nextUpgradeScore}`, W - 20, 68);
+
+    // Focus mode indicator (Touhou)
+    if (focusMode && gameState === 'PLAYING') {
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 12px Courier New';
+        ctx.fillStyle = '#ff4488';
+        ctx.shadowBlur = 6; ctx.shadowColor = '#ff4488';
+        ctx.fillText('[ FOCUS MODE ]', W / 2, H - 40);
+        ctx.shadowBlur = 0;
+    }
+
+    // Graze counter (Touhou)
+    if (grazeCount > 0) {
+        ctx.textAlign = 'left';
+        ctx.font = '11px Courier New';
+        ctx.fillStyle = grazeFlash > 0 ? '#ffffff' : '#aaddff';
+        ctx.fillText(`GRAZE: ${grazeCount}`, 20, H - 40);
+    }
+
+    // Combo indicator
+    if (comboMultiplier > 1 && comboTimer > 0) {
+        let pulse = Math.sin(frameCount * 0.2) * 0.2 + 1;
+        ctx.font = `bold ${16 * pulse}px Courier New`;
+        ctx.fillStyle = '#ffdd00';
+        ctx.shadowBlur = 8; ctx.shadowColor = '#ffdd00';
+        ctx.textAlign = 'center';
+        ctx.fillText(`COMBO x${comboMultiplier} (${comboCount} KILLS)`, W / 2, H - 20);
+        ctx.shadowBlur = 0;
+    }
+
+    // Kill feed
+    ctx.textAlign = 'right';
+    ctx.font = '10px Courier New';
+    killFeed.forEach((k, i) => {
+        ctx.fillStyle = k.color;
+        ctx.globalAlpha = Math.min(1, k.life / 60);
+        ctx.fillText(k.text, W - 20, H - 55 - i * 15);
+    });
+    ctx.globalAlpha = 1;
+
+    // Installed modules
+    if (mech.installedParts && mech.installedParts.length > 0) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(0, H - 22, W, 22);
+        ctx.strokeStyle = 'rgba(255, 50, 0, 0.1)';
+        ctx.beginPath(); ctx.moveTo(0, H - 22); ctx.lineTo(W, H - 22); ctx.stroke();
+        ctx.fillStyle = '#555'; ctx.font = '9px Courier New';
+        let partsStr = 'MODULES: ' + mech.installedParts.map(p => p.split(']').pop().trim()).join(' // ');
+        ctx.fillText(partsStr, 10, H - 8);
+    }
+
+    // Protocol announcement (Touhou-style spell card display)
+    if (protocolAnnouncement) {
+        let pa = protocolAnnouncement;
+        let alpha = pa.timer > 90 ? (120 - pa.timer) / 30 :
+                    pa.timer < 30 ? pa.timer / 30 : 1;
+        alpha = Math.min(1, Math.max(0, alpha));
+
+        // Dramatic bars
+        ctx.globalAlpha = alpha * 0.8;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, H / 2 - 45, W, 90);
+
+        // Side accent lines
+        ctx.fillStyle = pa.color;
+        ctx.fillRect(0, H / 2 - 45, 4, 90);
+        ctx.fillRect(W - 4, H / 2 - 45, 4, 90);
+
+        // Protocol name
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 28px Courier New';
+        ctx.fillStyle = pa.color;
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = pa.color;
+        ctx.fillText(pa.text, W / 2, H / 2 - 5);
+        ctx.shadowBlur = 0;
+
+        // Subtitle
+        ctx.font = '12px Courier New';
+        ctx.fillStyle = '#aaa';
+        ctx.fillText(pa.sub, W / 2, H / 2 + 25);
+
+        ctx.globalAlpha = 1;
+    }
+
+    // Shutdown overlay
+    if (mech.isShutdown) {
+        let flashAlpha = 0.15 + Math.sin(frameCount * 0.3) * 0.1;
+        ctx.fillStyle = `rgba(255, 0, 0, ${flashAlpha})`;
+        ctx.fillRect(0, 0, W, H);
+        for (let i = 0; i < 5; i++) {
+            let y = Math.random() * H;
+            ctx.fillStyle = `rgba(255, 0, 0, ${Math.random() * 0.1})`;
+            ctx.fillRect(0, y, W, 2 + Math.random() * 6);
+        }
+        ctx.fillStyle = '#ff0000';
+        ctx.font = 'bold 28px Courier New';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 10; ctx.shadowColor = '#ff0000';
+        ctx.fillText('!! REACTOR MELTDOWN !!', W / 2, H / 2 - 10);
+        ctx.shadowBlur = 0;
+        ctx.font = '14px Courier New'; ctx.fillStyle = '#fff';
+        ctx.fillText(`SYSTEMS REBOOTING... ${Math.ceil(mech.shutdownTimer / 60)}s`, W / 2, H / 2 + 20);
+        ctx.textAlign = 'left';
+    }
+
+    drawMinimap();
+}
+
+function drawMinimap() {
+    let mmSize = 80;
+    let mmX = W - mmSize - 10;
+    let mmY = H - mmSize - 30;
+    let scaleX = mmSize / W;
+    let scaleY = mmSize / H;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(mmX, mmY, mmSize, mmSize);
+    ctx.strokeStyle = 'rgba(255, 50, 0, 0.2)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(mmX, mmY, mmSize, mmSize);
+
+    ctx.fillStyle = '#333';
+    obstacles.forEach(o => {
+        ctx.fillRect(mmX + o.x * scaleX, mmY + o.y * scaleY,
+                     Math.max(2, o.w * scaleX), Math.max(2, o.h * scaleY));
+    });
+
+    enemies.forEach(e => {
+        ctx.fillStyle = e.type === 'Boss' ? '#ff0000' : '#aa3333';
+        let r = e.type === 'Boss' ? 3 : 1.5;
+        ctx.beginPath(); ctx.arc(mmX + e.x * scaleX, mmY + e.y * scaleY, r, 0, Math.PI * 2); ctx.fill();
+    });
+
+    ctx.fillStyle = '#ffdd00';
+    pickups.forEach(p => {
+        ctx.fillRect(mmX + p.x * scaleX - 1, mmY + p.y * scaleY - 1, 2, 2);
+    });
+
+    ctx.fillStyle = focusMode ? '#ff4488' : '#00ff66';
+    ctx.beginPath(); ctx.arc(mmX + mech.x * scaleX, mmY + mech.y * scaleY, 2.5, 0, Math.PI * 2); ctx.fill();
+}
+
+// ==========================================
+// MENU SCREENS
+// ==========================================
+function drawMenu() {
+    menuPulse += 0.03;
+    ctx.fillStyle = '#080808';
+    ctx.fillRect(0, 0, W, H);
+
+    bgStars.forEach(s => {
+        let b = s.brightness + Math.sin(frameCount * s.twinkleSpeed) * 0.15;
+        ctx.fillStyle = `rgba(150, 100, 50, ${Math.max(0, b)})`;
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+    });
+
+    ctx.strokeStyle = '#0e0e0e'; ctx.lineWidth = 0.5;
+    let go = (frameCount * 0.5) % 40;
+    for (let x = -40 + go; x < W + 40; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = -40 + go; y < H + 40; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 20; ctx.shadowColor = '#ff3300';
+    ctx.fillStyle = '#ff3300';
+    ctx.font = 'bold 48px Courier New';
+    ctx.fillText('SCRAP LORD', W / 2, 150);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#555'; ctx.font = '13px Courier New';
+    ctx.fillText('MECH SALVAGE PROTOCOL // TOUHOU EDITION', W / 2, 185);
+
+    ctx.strokeStyle = '#ff3300'; ctx.lineWidth = 1;
+    ctx.globalAlpha = 0.3;
+    ctx.beginPath(); ctx.moveTo(W / 2 - 200, 200); ctx.lineTo(W / 2 + 200, 200); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // Touhou feature callout
+    ctx.fillStyle = '#ff4488'; ctx.font = '11px Courier New';
+    ctx.fillText('Featuring: Grazing // Focus Mode // Boss Protocol Cards // Point-Blank Bonus', W / 2, 225);
+
+    let bx = W / 2 - 110, by = 370, bw = 220, bh = 55;
+    let hover = mouse.x > bx && mouse.x < bx + bw && mouse.y > by && mouse.y < by + bh;
+    ctx.strokeStyle = hover ? '#ff3300' : '#333';
+    ctx.lineWidth = hover ? 2 : 1;
+    ctx.strokeRect(bx, by, bw, bh);
+    if (hover) {
+        ctx.fillStyle = 'rgba(255, 50, 0, 0.1)'; ctx.fillRect(bx, by, bw, bh);
+        ctx.shadowBlur = 15; ctx.shadowColor = '#ff3300';
+    }
+    ctx.fillStyle = hover ? '#ff3300' : '#888';
+    ctx.font = 'bold 22px Courier New';
+    ctx.fillText('DEPLOY', W / 2, by + 35);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#444'; ctx.font = '11px Courier New';
+    let controls = [
+        'WASD - Move    SHIFT - Focus Mode    LMB - Fire',
+        'SPACE - Dash    RMB - Vent    E - Pickup Range    M - Mute'
+    ];
+    controls.forEach((c, i) => ctx.fillText(c, W / 2, 490 + i * 18));
+
+    ctx.fillStyle = '#333'; ctx.font = '10px Courier New';
+    ctx.fillText('v2.1 TOUHOU EDITION // PRESS M TO MUTE', W / 2, H - 20);
+    ctx.textAlign = 'left';
+}
+
+function drawMechSelect() {
+    ctx.fillStyle = '#080808';
+    ctx.fillRect(0, 0, W, H);
+    ctx.strokeStyle = '#0e0e0e';
+    for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+    for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#888'; ctx.font = 'bold 22px Courier New';
+    ctx.fillText('SELECT CHASSIS', W / 2, 60);
+    ctx.fillStyle = '#555'; ctx.font = '11px Courier New';
+    ctx.fillText('Choose your mech configuration', W / 2, 82);
+
+    let types = Object.keys(MECHS);
+    types.forEach((type, i) => {
+        let m = MECHS[type];
+        let x = 40 + (i * 290), y = 110, w = 260, h = 420;
+        let hover = mouse.x > x && mouse.x < x + w && mouse.y > y && mouse.y < y + h;
+
+        ctx.fillStyle = hover ? 'rgba(255, 50, 0, 0.05)' : 'rgba(20, 20, 20, 0.8)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = hover ? '#ff3300' : '#333';
+        ctx.lineWidth = hover ? 2 : 1;
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.fillStyle = hover ? '#ff3300' : m.color;
+        ctx.font = 'bold 18px Courier New';
+        ctx.fillText(m.name, x + w / 2, y + 35);
+        ctx.fillStyle = '#555'; ctx.font = '10px Courier New';
+        ctx.fillText(m.subtitle, x + w / 2, y + 52);
+
+        ctx.strokeStyle = '#333';
+        ctx.beginPath(); ctx.moveTo(x + 20, y + 65); ctx.lineTo(x + w - 20, y + 65); ctx.stroke();
+
+        ctx.save();
+        ctx.translate(x + w / 2, y + 155);
+        ctx.rotate(Math.sin(frameCount * 0.02 + i) * 0.3);
+        let s = 30;
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(-s + 3, -s - 2, 7, s * 2 + 4);
+        ctx.fillRect(s - 10, -s - 2, 7, s * 2 + 4);
+        ctx.fillStyle = m.color;
+        ctx.fillRect(-s + 2, -s + 2, s * 2 - 4, s * 2 - 4);
+        ctx.strokeStyle = '#111'; ctx.lineWidth = 1.5;
+        ctx.strokeRect(-s + 2, -s + 2, s * 2 - 4, s * 2 - 4);
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(-8, -8, 16, 16);
+        ctx.fillStyle = '#cc0000';
+        ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#3a3a3a';
+        ctx.fillRect(s - 4, -5, 28, 10);
+        ctx.fillStyle = '#2a2a2a';
+        ctx.fillRect(s + 20, -6, 6, 12);
+        ctx.restore();
+
+        let statY = y + 220;
+        let stats = [
+            { label: 'HULL', value: m.health, max: 250, color: '#cc3333' },
+            { label: 'SPEED', value: m.speed, max: 4, color: '#33cc66' },
+            { label: 'FIREPOWER', value: m.bulletDamage, max: 30, color: '#cc9933' },
+            { label: 'FIRE RATE', value: 1 / m.fireRate, max: 0.25, color: '#3399cc' }
+        ];
+        ctx.textAlign = 'left';
+        stats.forEach((st, si) => {
+            let sy = statY + si * 32;
+            ctx.fillStyle = '#666'; ctx.font = '10px Courier New';
+            ctx.fillText(st.label, x + 20, sy + 8);
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(x + 90, sy + 1, 130, 10);
+            ctx.fillStyle = st.color;
+            ctx.fillRect(x + 90, sy + 1, 130 * (st.value / st.max), 10);
+            ctx.strokeStyle = '#444'; ctx.lineWidth = 1;
+            ctx.strokeRect(x + 90, sy + 1, 130, 10);
+        });
+
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#555'; ctx.font = '10px Courier New';
+        m.desc.forEach((d, di) => ctx.fillText(d, x + w / 2, statY + 145 + di * 16));
+        ctx.textAlign = 'center';
+    });
+
+    let bbx = W / 2 - 60, bby = H - 60, bbw = 120, bbh = 35;
+    let bHover = mouse.x > bbx && mouse.x < bbx + bbw && mouse.y > bby && mouse.y < bby + bbh;
+    ctx.strokeStyle = bHover ? '#ff3300' : '#333'; ctx.lineWidth = 1;
+    ctx.strokeRect(bbx, bby, bbw, bbh);
+    ctx.fillStyle = bHover ? '#ff3300' : '#666';
+    ctx.font = '14px Courier New';
+    ctx.fillText('BACK', W / 2, bby + 22);
+    ctx.textAlign = 'left';
+}
+
+function drawUpgradeMenu() {
+    drawGame();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.shadowBlur = 15; ctx.shadowColor = '#ff3300';
+    ctx.fillStyle = '#ff3300';
+    ctx.font = 'bold 32px Courier New';
+    ctx.fillText('SALVAGE DETECTED', W / 2, 80);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#888'; ctx.font = '13px Courier New';
+    ctx.fillText('SELECT MODULE TO INSTALL:', W / 2, 110);
+
+    let cardW = 240, cardH = 280;
+    let startX = (W - (cardW * 3 + 30)) / 2;
+
+    currentUpgrades.forEach((upg, i) => {
+        let x = startX + i * (cardW + 15), y = 140;
+        let hover = mouse.x > x && mouse.x < x + cardW && mouse.y > y && mouse.y < y + cardH;
+
+        ctx.fillStyle = hover ? 'rgba(255, 50, 0, 0.08)' : 'rgba(15, 15, 15, 0.9)';
+        ctx.fillRect(x, y, cardW, cardH);
+        ctx.strokeStyle = hover ? '#ff3300' : '#444';
+        ctx.lineWidth = hover ? 2 : 1;
+        ctx.strokeRect(x, y, cardW, cardH);
+
+        ctx.fillStyle = '#222';
+        ctx.fillRect(x + cardW / 2 - 25, y + 20, 50, 50);
+        ctx.strokeStyle = '#555'; ctx.lineWidth = 1;
+        ctx.strokeRect(x + cardW / 2 - 25, y + 20, 50, 50);
+        ctx.fillStyle = '#ff3300'; ctx.font = 'bold 18px Courier New';
+        ctx.fillText(upg.icon || '?', x + cardW / 2, y + 52);
+
+        ctx.fillStyle = hover ? '#ff3300' : '#aaa';
+        ctx.font = 'bold 12px Courier New';
+        ctx.fillText(upg.name, x + cardW / 2, y + 100);
+
+        ctx.strokeStyle = '#333';
+        ctx.beginPath(); ctx.moveTo(x + 20, y + 115); ctx.lineTo(x + cardW - 20, y + 115); ctx.stroke();
+
+        ctx.font = '12px Courier New';
+        let lines = upg.desc.split('\n');
+        lines.forEach((line, li) => {
+            let isNeg = line.startsWith('-') || line.toLowerCase().includes('-');
+            ctx.fillStyle = isNeg ? '#cc4444' : '#44cc44';
+            ctx.fillText(line, x + cardW / 2, y + 140 + li * 22);
+        });
+
+        ctx.fillStyle = '#555'; ctx.font = '10px Courier New';
+        ctx.fillText('TIER ' + '*'.repeat(upg.tier || 1), x + cardW / 2, y + cardH - 30);
+
+        if (hover) {
+            ctx.fillStyle = '#ff3300'; ctx.font = 'bold 11px Courier New';
+            ctx.fillText('[ CLICK TO INSTALL ]', x + cardW / 2, y + cardH - 10);
+        }
+    });
+    ctx.textAlign = 'left';
+}
+
+function drawGameOver() {
+    drawGame();
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    let glitchX = Math.random() > 0.9 ? (Math.random() - 0.5) * 10 : 0;
+    ctx.shadowBlur = 20; ctx.shadowColor = '#ff0000';
+    ctx.fillStyle = '#ff0000'; ctx.font = 'bold 44px Courier New';
+    ctx.fillText('CHASSIS DESTROYED', W / 2 + glitchX, H / 2 - 80);
+    ctx.shadowBlur = 0;
+
+    ctx.fillStyle = '#888'; ctx.font = '20px Courier New';
+    ctx.fillText(`SALVAGE RECOVERED: ${score}`, W / 2, H / 2 - 30);
+
+    ctx.fillStyle = '#666'; ctx.font = '16px Courier New';
+    ctx.fillText(`Waves Survived: ${wave}`, W / 2, H / 2);
+    ctx.fillText(`Modules Installed: ${mech.installedParts ? mech.installedParts.length : 0}`, W / 2, H / 2 + 25);
+
+    // Touhou stats
+    ctx.fillStyle = '#aaddff'; ctx.font = '14px Courier New';
+    ctx.fillText(`Enemies Grazed: ${grazeCount}`, W / 2, H / 2 + 55);
+
+    let pulse = Math.sin(frameCount * 0.08) * 0.3 + 0.7;
+    ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
+    ctx.font = '14px Courier New';
+    ctx.fillText('CLICK TO RETURN TO DEPLOYMENT', W / 2, H / 2 + 100);
+    ctx.textAlign = 'left';
+}
+
+// ==========================================
+// UI CLICK HANDLER
+// ==========================================
+function handleUIClick() {
+    if (gameState === 'MENU') {
+        let bx = W / 2 - 110, by = 370, bw = 220, bh = 55;
+        if (mouse.x > bx && mouse.x < bx + bw && mouse.y > by && mouse.y < by + bh) {
+            gameState = 'MECH_SELECT';
+            AudioEngine.menuClick();
+        }
+    } else if (gameState === 'MECH_SELECT') {
+        let types = Object.keys(MECHS);
+        types.forEach((type, i) => {
+            let x = 40 + (i * 290), y = 110, w = 260, h = 420;
+            if (mouse.x > x && mouse.x < x + w && mouse.y > y && mouse.y < y + h) {
+                initMech(type);
+                score = 0; nextUpgradeScore = 200; wave = 1; waveTimer = 0;
+                enemies = []; bullets = []; enemyBullets = []; particles = [];
+                pickups = []; damageNumbers = []; killFeed = [];
+                comboCount = 0; comboTimer = 0; comboMultiplier = 1;
+                grazeCount = 0; grazeTimer = 0; grazeFlash = 0;
+                protocolAnnouncement = null;
+                generateTerrain();
+                gameState = 'PLAYING';
+                AudioEngine.menuClick();
+            }
+        });
+        let bbx = W / 2 - 60, bby = H - 60, bbw = 120, bbh = 35;
+        if (mouse.x > bbx && mouse.x < bbx + bbw && mouse.y > bby && mouse.y < bby + bbh) {
+            gameState = 'MENU';
+            AudioEngine.menuClick();
+        }
+    } else if (gameState === 'UPGRADE') {
+        let cardW = 240, cardH = 280;
+        let startX = (W - (cardW * 3 + 30)) / 2;
+        currentUpgrades.forEach((upg, i) => {
+            let x = startX + i * (cardW + 15), y = 140;
+            if (mouse.x > x && mouse.x < x + cardW && mouse.y > y && mouse.y < y + cardH) {
+                upg.apply(mech);
+                mech.installedParts.push(upg.name);
+                gameState = 'PLAYING';
+                AudioEngine.upgrade();
+            }
+        });
+    } else if (gameState === 'GAMEOVER') {
+        gameState = 'MENU';
+        AudioEngine.menuClick();
+    }
+}
+
+// ==========================================
+// MAIN DRAW
+// ==========================================
+function draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (gameState === 'MENU') drawMenu();
+    else if (gameState === 'MECH_SELECT') drawMechSelect();
+    else if (gameState === 'UPGRADE') drawUpgradeMenu();
+    else if (gameState === 'GAMEOVER') drawGameOver();
+    else if (gameState === 'PLAYING') drawGame();
+}
+
+// ==========================================
+// GAME LOOP
+// ==========================================
+let prevMute = false;
+function gameLoop() {
+    frameCount++;
+    update();
+    draw();
+
+    if (mouse.click) {
+        handleUIClick();
+        mouse.click = false;
+    }
+
+    if (keys['m'] && !prevMute) AudioEngine.toggleMute();
+    prevMute = !!keys['m'];
+
+    requestAnimationFrame(gameLoop);
+}
+
+initMech('Juggernaut');
+gameLoop();
+
+</script>
+</body>
+</html>
